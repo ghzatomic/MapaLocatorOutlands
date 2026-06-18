@@ -130,13 +130,13 @@ class LocalizadorDeMapa:
             Coordenadas do canto superior esquerdo da melhor correspondência, ou None se não encontrar
         """
         # Aplicar template matching
-        resultado = cv2.matchTemplate(mapa_completo, pedaco_mapa, cv2.TM_CCOEFF_NORMED)
-        
+        resultado = cv2.matchTemplate(mapa_completo, pedaco_mapa, cv2.TM_CCORR_NORMED)
+
         # Encontrar o valor máximo de correspondência e sua localização
         min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(resultado)
-        
-        # O TM_CCOEFF_NORMED retorna valores entre -1 e 1, onde 1 é a correspondência perfeita
-        if max_val < 0.5:  # Limiar de confiança
+
+        # O TM_CCORR_NORMED retorna valores entre 0 e 1, onde 1 é a correspondência perfeita
+        if max_val < 0.8:
             return None
             
         # As coordenadas são do canto superior esquerdo

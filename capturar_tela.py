@@ -16,6 +16,8 @@ import argparse
 import subprocess
 import importlib.util
 import numpy as np
+import cv2
+from PIL import ImageGrab, ImageTk
 import webbrowser
 
 class SeletorDeArea:
@@ -24,51 +26,77 @@ class SeletorDeArea:
     def __init__(self, root, nome_arquivo=None):
         """
         Inicializa o seletor de área.
-        
+
         Args:
             root: Janela principal do Tkinter
             nome_arquivo: Nome do arquivo para salvar a captura (opcional)
         """
         self.root = root
+        self.root.title("MapDecoder - Selecione a área do mapa")
         self.root.attributes('-fullscreen', True)
-        self.root.attributes('-alpha', 0.3)  # Transparência para ver a tela por trás
-        self.root.configure(background='grey')
-        
+        self.root.configure(background='black')
+        # Garantir que ESC sempre saia do fullscreen
+        self.root.bind("<Escape>", self.cancelar)
+        self.root.bind("<KeyPress-q>", self.cancelar)
+        self.root.bind("<KeyPress-Q>", self.cancelar)
+        self.root.protocol("WM_DELETE_WINDOW", self.cancelar)
+
         # Definir nome do arquivo
         if nome_arquivo:
             self.nome_arquivo = nome_arquivo
         else:
-            # Usar timestamp como nome de arquivo padrão
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             self.nome_arquivo = f"captura_{timestamp}.png"
-        
+
         # Variáveis para armazenar coordenadas
         self.start_x = 0
         self.start_y = 0
         self.end_x = 0
         self.end_y = 0
         self.selecionando = False
-        
+
+        # Tirar screenshot do desktop para usar como fundo
+        try:
+            self.screenshot = ImageGrab.grab()
+        except Exception:
+            self.screenshot = pyautogui.screenshot()
+
         # Canvas para desenhar o retângulo de seleção
-        self.canvas = tk.Canvas(root, cursor="cross")
+        self.canvas = tk.Canvas(
+            root,
+            cursor="cross",
+            highlightthickness=0
+        )
         self.canvas.pack(fill=tk.BOTH, expand=True)
-        
-        # Instruções
-        instrucoes = "Clique e arraste para selecionar uma área. Pressione ESC para cancelar."
+
+        # Exibir screenshot como imagem de fundo
+        self.screenshot_tk = ImageTk.PhotoImage(self.screenshot)
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.screenshot_tk)
+
+        # Instruções com fundo escuro para legibilidade
+        instrucoes = "Clique e arraste para selecionar uma área. ESC ou Q para cancelar."
+        largura_tela = self.screenshot.width
+        self.canvas.create_rectangle(
+            0, 0, largura_tela, 60,
+            fill="black",
+            stipple="gray50",
+            outline=""
+        )
         self.canvas.create_text(
-            root.winfo_screenwidth() // 2, 
-            30, 
-            text=instrucoes, 
-            fill="white", 
+            largura_tela // 2,
+            30,
+            text=instrucoes,
+            fill="white",
             font=("Arial", 16)
         )
-        
+
         # Configurar eventos
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
-        self.root.bind("<Escape>", self.cancelar)
-        
+        # Botão direito também cancela
+        self.canvas.bind("<ButtonPress-3>", self.cancelar)
+
         # Retângulo de seleção
         self.rect_id = None
         
@@ -117,19 +145,12 @@ class SeletorDeArea:
             self.root.destroy()
             return
         
-        # Esconder a janela para capturar a tela sem a interface
-        self.root.withdraw()
-        
+        # Recortar a área selecionada do screenshot já capturado
         try:
-            # Capturar a região selecionada
-            screenshot = pyautogui.screenshot(region=(left, top, width, height))
-            
-            # Salvar a imagem
+            screenshot = self.screenshot.crop((left, top, left + width, top + height))
             screenshot.save(self.nome_arquivo)
-            
             # Processar a imagem com map_decoder
             self.processar_com_map_decoder()
-            
         except Exception as e:
             messagebox.showerror("Erro", f"Falha ao capturar a tela: {str(e)}")
             self.root.destroy()
@@ -285,7 +306,7 @@ class SeletorDeArea:
             comando = [
                 sys.executable,  # Python atual
                 "map_decoder.py",
-                "--pedaco", self.nome_arquivo,
+                "--pedaco-mapa", self.nome_arquivo,
                 "--debug"
             ]
             
@@ -358,21 +379,270 @@ class SeletorDeArea:
                 f"Falha ao executar map_decoder: {str(e)}"
             )
     
+    def executar_auto_scan(self):
+        """Executa scan automático procurando a moldura do mapa na tela."""
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        moldura_path = os.path.join(script_dir, "molduramapa.png")
+        mapa_completo_path = os.path.join(script_dir, "2Dmap0.png")
+
+        if not os.path.exists(moldura_path):
+            print("Erro: Arquivo molduramapa.png não encontrado.")
+            print("Coloque uma captura da moldura do mapa no diretório do programa.")
+            self.root.destroy()
+            return
+
+        try:
+            # Carregar moldura VAZIA para criar template que ignora o conteúdo do mapa
+            moldura_vazia_path = os.path.join(script_dir, "molduramapasemmapa.png")
+            if not os.path.exists(moldura_vazia_path):
+                print("Erro: Arquivo molduramapasemmapa.png não encontrado.")
+                self.root.destroy()
+                return
+
+            moldura_vazia = cv2.imread(moldura_vazia_path, cv2.IMREAD_UNCHANGED)
+            if moldura_vazia is None:
+                print("Erro: Não foi possível carregar molduramapasemmapa.png")
+                self.root.destroy()
+                return
+
+            # Criar template: bordas reais da moldura, centro preenchido com cor neutra
+            bgr = moldura_vazia[:, :, :3]
+            alpha = moldura_vazia[:, :, 3]
+            mascara_bordas = alpha >= 128
+            cor_media_bordas = bgr[mascara_bordas].mean(axis=0)
+            template = bgr.copy().astype(np.float32)
+            template[~mascara_bordas] = cor_media_bordas
+            template = np.clip(template, 0, 255).astype(np.uint8)
+
+            try:
+                screenshot = np.array(ImageGrab.grab())
+            except Exception:
+                screenshot = np.array(pyautogui.screenshot())
+            screenshot = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
+
+            # Template matching com centro neutro (ignora conteúdo do mapa)
+            resultado = cv2.matchTemplate(screenshot, template, cv2.TM_CCOEFF_NORMED)
+
+            # Margens fixas obtidas da transparência da molduramapasemmapa.png
+            margem_esq = 6
+            margem_dir = 3
+            margem_sup = 24
+            margem_inf = 21
+            mh, mw = moldura_vazia.shape[:2]
+            mapa_w = mw - margem_esq - margem_dir
+            mapa_h = mh - margem_sup - margem_inf
+
+            # Procurar os top candidatos e verificar qual tem mapa interno válido
+            resultado_copia = resultado.copy()
+            melhor_candidato = None
+            melhor_score = 0
+
+            for _ in range(10):
+                _, val, _, loc = cv2.minMaxLoc(resultado_copia)
+                if val < 0.25:
+                    break
+
+                cx, cy = loc
+                # Extrair mapa interno deste candidato
+                ix = cx + margem_esq
+                iy = cy + margem_sup
+
+                # Verificar se o mapa interno cabe na imagem
+                if iy + mapa_h > screenshot.shape[0] or ix + mapa_w > screenshot.shape[1]:
+                    resultado_copia[cy, cx] = 0
+                    continue
+
+                pedaco = screenshot[iy:iy + mapa_h, ix:ix + mapa_w]
+
+                # Verificar se o pedaco tem conteúdo real (não é tudo preto/branco)
+                if pedaco.size > 0:
+                    std = pedaco.std()
+                    media = pedaco.mean()
+                    # Mapa válido: tem variação de cor e não é totalmente escuro
+                    if std > 20 and media > 30 and media < 240:
+                        if val > melhor_score:
+                            melhor_score = val
+                            melhor_candidato = (cx, cy, val, pedaco)
+
+                # Zerar este pico para encontrar o próximo
+                y1 = max(0, cy - 5)
+                y2 = min(resultado_copia.shape[0], cy + 5)
+                x1 = max(0, cx - 5)
+                x2 = min(resultado_copia.shape[1], cx + 5)
+                resultado_copia[y1:y2, x1:x2] = 0
+
+            if melhor_candidato is None:
+                print("Moldura não encontrada. Nenhum candidato com mapa interno válido.")
+                print("Certifique-se de que o jogo está aberto com o mapa visível.")
+                self.root.destroy()
+                return
+
+            mx, my, max_val, mapa_interno = melhor_candidato
+
+            cv2.imwrite(self.nome_arquivo, mapa_interno)
+
+            print(f"Auto-scan: moldura encontrada em ({mx}, {my}) com confiança {max_val:.2%}")
+            print(f"Mapa interno extraído: {mapa_w}x{mapa_h} salvo como '{self.nome_arquivo}'")
+
+            # Processar com map_decoder diretamente (sem messagebox)
+            if not os.path.exists(mapa_completo_path):
+                print(f"Erro: Mapa completo não encontrado em '{mapa_completo_path}'")
+                self.root.destroy()
+                return
+
+            spec = importlib.util.spec_from_file_location("map_decoder", os.path.join(script_dir, "map_decoder.py"))
+            map_decoder = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(map_decoder)
+
+            pedaco_mapa = map_decoder.cv2.imread(self.nome_arquivo)
+            mapa_completo = map_decoder.cv2.imread(mapa_completo_path)
+
+            if pedaco_mapa is None or mapa_completo is None:
+                print("Erro: Falha ao carregar imagens para processamento.")
+                self.root.destroy()
+                return
+
+            localizador = map_decoder.LocalizadorDeMapa()
+            coordenadas = localizador.encontrar_correspondencia(mapa_completo, pedaco_mapa)
+
+            if coordenadas is None:
+                print("Não foi possível encontrar uma correspondência confiável no mapa completo.")
+                self.root.destroy()
+                return
+
+            detector = map_decoder.DetectorDeXVermelho()
+            coordenadas_x = detector.detectar(pedaco_mapa)
+
+            if coordenadas_x is None:
+                print("X vermelho não encontrado no pedaço do mapa.")
+                self.root.destroy()
+                return
+
+            x_completo = coordenadas.x + coordenadas_x.x
+            y_completo = coordenadas.y + coordenadas_x.y
+
+            print(f"\n=== RESULTADO DA DETECÇÃO ===")
+            print(f"X vermelho encontrado nas coordenadas: X={x_completo}, Y={y_completo}")
+
+            # Abrir navegador
+            url = f"https://exploreoutlands.com/#pos:{x_completo},{y_completo},9"
+            print(f"Abrindo navegador: {url}")
+            webbrowser.open(url)
+
+            # Salvar imagem com marcação
+            mapa_com_marcacao = mapa_completo.copy()
+            h, w = pedaco_mapa.shape[:2]
+            cv2.rectangle(
+                mapa_com_marcacao,
+                (coordenadas.x, coordenadas.y),
+                (coordenadas.x + w, coordenadas.y + h),
+                (0, 255, 0), 2
+            )
+            cv2.circle(
+                mapa_com_marcacao,
+                (x_completo, y_completo),
+                10, (0, 0, 255), 2
+            )
+            cv2.putText(
+                mapa_com_marcacao,
+                f"X: {x_completo}, Y: {y_completo}",
+                (x_completo + 15, y_completo),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2
+            )
+            cv2.imwrite("resultado_deteccao.png", mapa_com_marcacao)
+            print(f"Imagem de resultado salva como 'resultado_deteccao.png'")
+
+        except Exception as e:
+            print(f"Erro no Auto-Scan: {str(e)}")
+        finally:
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
+
     def cancelar(self, event=None):
         """Cancela a operação e fecha a aplicação."""
         self.root.destroy()
+
+class JanelaControleAutoScan:
+    """Janela pequena flutuante para disparar o auto-scan manualmente."""
+
+    def __init__(self, root, nome_arquivo=None):
+        self.root = root
+        self.nome_arquivo = nome_arquivo
+        self.root.title("MapDecoder Auto-Scan")
+        self.root.attributes("-topmost", True)
+        self.root.geometry("300x120+20+20")
+        self.root.configure(background="#222222")
+        self.root.resizable(False, False)
+        self.root.bind("<F5>", self.disparar_scan)
+        self.root.bind("<Escape>", lambda e: self.root.destroy())
+        self.root.protocol("WM_DELETE_WINDOW", self.root.destroy)
+
+        # Labels e botão
+        tk.Label(
+            root,
+            text="Posicione o mapa no jogo",
+            bg="#222222",
+            fg="white",
+            font=("Arial", 12)
+        ).pack(pady=(10, 2))
+
+        tk.Label(
+            root,
+            text="e clique em Escanear ou aperte F5",
+            bg="#222222",
+            fg="#cccccc",
+            font=("Arial", 10)
+        ).pack(pady=(0, 8))
+
+        self.botao = tk.Button(
+            root,
+            text="Escanear",
+            command=self.disparar_scan,
+            bg="#4CAF50",
+            fg="white",
+            font=("Arial", 12, "bold"),
+            width=12,
+            height=1
+        )
+        self.botao.pack()
+
+    def disparar_scan(self, event=None):
+        """Esconde a janela, aguarda brevemente e executa o scan."""
+        self.botao.config(text="Escaneando...", state=tk.DISABLED)
+        self.root.withdraw()
+        # Aguardar 500ms para garantir que a janela sumiu antes do screenshot
+        self.root.after(500, self._executar)
+
+    def _executar(self):
+        try:
+            app = SeletorDeArea(self.root, self.nome_arquivo)
+            app.executar_auto_scan()
+        finally:
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
+
 
 def main():
     """Função principal."""
     parser = argparse.ArgumentParser(description="Captura um pedaço da tela e processa com map_decoder.")
     parser.add_argument("-o", "--output", help="Nome do arquivo de saída (PNG)")
     parser.add_argument("--apenas-capturar", action="store_true", help="Apenas captura a imagem sem processar")
+    parser.add_argument("--auto-scan", action="store_true", help="Detecta automaticamente a moldura do mapa na tela")
     args = parser.parse_args()
-    
-    # Inicializar interface
-    root = tk.Tk()
-    app = SeletorDeArea(root, args.output)
-    root.mainloop()
+
+    if args.auto_scan:
+        root = tk.Tk()
+        JanelaControleAutoScan(root, args.output)
+        root.mainloop()
+    else:
+        root = tk.Tk()
+        root.deiconify()
+        app = SeletorDeArea(root, args.output)
+        root.mainloop()
 
 if __name__ == "__main__":
     main()

@@ -68,3 +68,27 @@ O programa retorna:
 Se a visualização estiver ativada, uma imagem será salva mostrando o mapa completo com:
 - Um retângulo verde ao redor da área correspondente
 - Um círculo vermelho na posição do X vermelho
+
+## Criando um Executável para Windows
+
+Para criar um executável (.exe) do programa, siga estas etapas:
+
+1. Instale o PyInstaller:
+
+```
+pip install pyinstaller
+```
+
+2. Crie o executável para a ferramenta de captura de tela:
+
+```
+pyinstaller --onefile --windowed --name MapDecoder --add-data "map_decoder.py;." --add-data "2Dmap0.png;." capturar_tela.py
+```
+
+3. O executável será criado na pasta `dist`
+
+### Observações
+
+- O executável gerado é independente e não requer Python instalado
+- Certifique-se de que o arquivo `2Dmap0.png` (mapa completo) esteja presente no mesmo diretório do executável
+- Para adicionar um ícone personalizado, use a opção `--icon=seu_icone.ico`
